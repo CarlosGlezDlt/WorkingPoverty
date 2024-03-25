@@ -1,0 +1,1169 @@
+---
+title: "Pobreza laboral en Jalisco"
+output: html_document
+date: "2024-03-25"
+---
+
+```{=html}
+<style>
+body {
+text-align: justify;
+}
+</style>
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Automatizacion ficha trimestral pobreza laboral
+
+
+# Carga de librerías ------------------------------------------------------
+library(tidyverse)
+library(rvest)
+library(openxlsx)
+library(readxl)
+library(tidyxl)
+library(ggrepel)
+library(officer)
+library(plotly)
+
+# Directorio de trabajo ---------------------------------------------------
+setwd("C:/Users/UsuarioPC/Documents/PobrezaLaboral")
+
+
+
+# Descarga de la base -----------------------------------------------------
+linkDescarga <- read_html('https://www.coneval.org.mx/Medicion/Paginas/ITLP-IS_pobreza_laboral.aspx') %>%
+  html_element(css = ".lizip") %>%
+  html_attrs() %>% .['href']
+linkDescarga <- paste0('https://www.coneval.org.mx', linkDescarga)
+
+triAnio <- str_split(linkDescarga, '/') %>% unlist() %>% .[8]
+
+
+download.file(linkDescarga, destfile = "archivo.zip")
+unzip("archivo.zip")
+
+
+
+# Trimestres y Anios ------------------------------------------------------
+
+#Sacamos el trimestre abreviado de los datos de la base:
+Tn <- paste0(str_sub(triAnio, 2,2), str_sub(triAnio, 1,1))
+
+#Obtenemos el anio de la base
+Anio <- str_sub(triAnio,3,6) %>% as.numeric(.)
+
+#Obtenemos Trimestre en numero
+if (Tn == 'T1') {
+  Trimestre <- 1
+} else if (Tn == 'T2'){
+  Trimestre <- 2
+} else if (Tn == 'T3'){
+  Trimestre <- 3
+}  else if (Tn == 'T4'){
+  Trimestre <- 4
+}
+
+
+#Obtenemos Trimestre en palabra
+if (Trimestre == 1) {
+  TrimestrePal <- 'primer'
+} else if (Trimestre == 2){
+  TrimestrePal <- 'segundo'
+} else if (Trimestre == 3){
+  TrimestrePal <- 'tercer'
+}  else{
+  TrimestrePal <- 'cuarto'
+} 
+
+
+#vector de anios para pegar como columna en la base
+anios <- seq(2005, Anio-1)
+
+aniosrep <- c()
+
+#Este for genera la repeticion de cada anio 4 veces hasta un anio antes del anio
+#de la ficha
+for (i in 1:length(anios)) {
+  repeticion <- rep(anios[i], 4)
+  aniosrep <- c(aniosrep, repeticion)
+}
+
+#Con el siguiente if realizamos las repeticiones necesarias del anio de la ficha de 
+#acuerdo al trimestre de la ficha
+if (Trimestre == 1) {
+  repeticion <- rep(Anio, 1)
+} else if (Trimestre == 2){
+  repeticion <- rep(Anio, 2)
+} else if (Trimestre == 3){
+  repeticion <- rep(Anio, 3)
+}else if (Trimestre == 4){
+  repeticion <- rep(Anio, 4)
+}
+aniosrep <- c(aniosrep, repeticion)
+#borramos objetos que no necesitamos
+rm(repeticion, i)
+
+
+#Creamos el vector de trimestre para pegar como columna
+trimestres <- rep(c(1,2,3,4), length(aniosrep))[1:length(aniosrep)]
+
+
+# Manipulacion de las bases -----------------------------------------------
+
+
+# Base porcentaje entidades (Cuadro 10) -----------------------------------
+
+df <- readxl::read_xlsx(paste0('Cuadro_de_indicadores_ITLP_',triAnio,'.xlsx'), sheet = 'Cuadro 10') 
+
+#df <- df[1:nrow(df), -1]
+
+
+#Este es un paso intermedio que nos va a ayudar a acomodar la base
+variables <- c()
+for (i in 1:ncol(df)) {
+  variables <- c(variables, paste0('X',i))
+}
+names(df) <- variables
+
+#Sacamos solo las observaciones nacionales
+nacional <- df %>% filter(X1 == 'Nacional')
+
+#Limites para recortar la base
+recorte1 <- df %>% mutate( n = 1:nrow(.)) %>% filter(X1 == 'Aguascalientes') %>% 
+  select(n) %>% .[[1,1]]
+
+recorte2 <- df %>% mutate( n = 1:nrow(.)) %>% filter(X1 == 'Zacatecas') %>% 
+  select(n) %>% .[[1,1]]
+
+#Recortamos la base
+df <- df[recorte1:recorte2, 1:ncol(df)]
+
+#Anexamos a la base los vectores que indican los anios y los trimestres y el vector nacional
+Raniosrep <- c('Anio', aniosrep)
+Rtrimestres <- c('Trimestre', trimestres)
+df_c10 <- rbind(df, nacional,Raniosrep, Rtrimestres)
+
+#Cambiamos los nombres de algunos estados:
+df_c10 <- df_c10 %>% mutate(X1 = ifelse(X1 == 'Coahuila de Zaragoza', 'Coahuila',
+                             ifelse(X1 == 'Michoacán de Ocampo', 'Michoacán',
+                                    ifelse(X1 == 'Veracruz de Ignacio de la Llave', 'Veracruz',
+                                           ifelse(X1 == 'México', 'Estado de México', X1)))))
+
+
+
+# Transpone todas las columnas menos la primer
+e_df_c10 <- data.frame(t(df_c10[-1]))
+# Anadimos los nombres de las columnas
+colnames(e_df_c10) <- df_c10[, 1] %>% as.vector() %>% unlist() %>% unname()
+
+
+#Cambiamos los ND del 2020T2 por NA:
+df_c10 <- e_df_c10 %>% mutate_all(~ ifelse(.=='ND', NA, .))
+
+#cambiamos los datos a clase numeric:
+df_c10 <- df_c10 %>% mutate_all(as.numeric)
+
+df_c10_long <- pivot_longer(df_c10,
+                                 cols = c(1:(ncol(df_c10)-2)),
+                                 names_to = "Estado",
+                                 values_to = "valor")
+
+
+#borramos df que no necesitamos:
+rm(df, e_df_c10, nacional)
+
+
+# Ingreso promedio (Cuadro 21) --------------------------------------------
+
+#Leemos toda la información de la base de excel
+tidy_df <- xlsx_cells(paste0('Cuadro_de_indicadores_ITLP_',triAnio,'.xlsx'), sheet = 'Cuadro 21') 
+
+#Obtenemos el renglon donde se aloja la info de jalisco
+r <- tidy_df %>% filter(character  == 'Jalisco') %>% select(row) %>% .[[1,1]]
+
+#leemos los datos de Jalisco 
+df <- read.xlsx(paste0('Cuadro_de_indicadores_ITLP_',triAnio,'.xlsx'), sheet = 'Cuadro 21',
+          rows = c(r, r+1), colNames = FALSE)
+df <- df[1:nrow(df), -1]
+
+#le agregamos los renglones de anios y trimestres
+df_c21 <- rbind(df,Raniosrep, Rtrimestres)
+
+
+# Transpone todas las columnas menos la primer
+e_df_c21 <- data.frame(t(df_c21[-1]))
+# Anadimos los nombres de las columnas
+colnames(e_df_c21) <- df_c21[, 1] %>% as.vector() %>% unlist() %>% unname()
+
+
+#Cambiamos los ND del 2020T2 por NA:
+df_c21 <- e_df_c21 %>% mutate_all(~ ifelse(.=='ND', NA, .))
+
+#cambiamos los datos a clase numeric:
+df_c21 <- df_c21 %>% mutate_all(as.numeric)
+
+df_c21_long <- pivot_longer(df_c21,
+                            cols = c(1:(ncol(df_c21)-2)),
+                            names_to = "Sexo",
+                            values_to = "valor")
+
+
+#borramos df que no necesitamos:
+rm(df, e_df_c21, tidy_df)
+
+
+
+
+# Porcentaje por area metropolitana (Cuadro 13) ---------------------------
+
+df <- readxl::read_xlsx(paste0('Cuadro_de_indicadores_ITLP_',triAnio,'.xlsx'), sheet = 'Cuadro 13') 
+
+#df <- df[1:nrow(df), -1]
+
+#Este es un paso intermedio que nos va a ayudar a acomodar la base
+variables <- c()
+for (i in 1:ncol(df)) {
+  variables <- c(variables, paste0('X',i))
+}
+names(df) <- variables
+
+
+#Limites para recortar la base
+recorte1 <- df %>% mutate( n = 1:nrow(.)) %>% filter(X1 == 'Área metropolitana de la Ciudad de México') %>% 
+  select(n) %>% .[[1,1]]
+recorte2 <- recorte1+38
+#Recortamos la base
+df <- df[recorte1:recorte2, 1:ncol(df)]
+
+#Anexamos a la base los vectores que indican los anios y los trimestres y el vector nacional
+Raniosrep <- c('Anio', aniosrep)
+Rtrimestres <- c('Trimestre', trimestres)
+df_c13 <- rbind(df,Raniosrep, Rtrimestres)
+
+#Cambiamos los nombres de algunos estados:
+df_c13 <- df_c13 %>% mutate(X1 = ifelse(X1 == 'Área metropolitana de la Ciudad de México',
+                                        'AM de la Ciudad de México',X1))
+
+
+
+# Transpone todas las columnas menos la primer
+e_df_c13 <- data.frame(t(df_c13[-1]))
+# Anadimos los nombres de las columnas
+colnames(e_df_c13) <- df_c13[, 1] %>% as.vector() %>% unlist() %>% unname()
+
+
+#Cambiamos los ND del 2020T2 por NA:
+df_c13 <- e_df_c13 %>% mutate_all(~ ifelse(.=='ND', NA, .))
+df_c13 <- df_c13 %>% mutate_all(~ ifelse(.=='NA', NA, .))
+
+#cambiamos los datos a clase numeric:
+df_c13 <- df_c13 %>% mutate_all(as.numeric)
+
+df_c13_long <- pivot_longer(df_c13,
+                            cols = c(1:(ncol(df_c13)-2)),
+                            names_to = "AM",
+                            values_to = "valor")
+
+
+#borramos df que no necesitamos:
+rm(df, e_df_c13)
+
+
+
+# Generación automática de Texto ------------------------------------------
+
+# Pagina 1 ----------------------------------------------------------------
+
+# Variables Página 1------------------------------------------------
+
+porcentajeJal <- df_c10 %>% select(Jalisco) %>% .[nrow(.), 1] 
+
+porcentajeNac <- df_c10 %>% select(Nacional) %>% .[nrow(.), 1] 
+
+porcentajeJalAntAnual <- df_c10 %>% select(Jalisco) %>% .[nrow(.)-4, 1] 
+
+porcentajeJalAntTri <- df_c10 %>% select(Jalisco) %>% .[nrow(.)-1, 1] 
+
+varJalAnual <- porcentajeJal - porcentajeJalAntAnual
+
+varJalAnual <- round(varJalAnual,1)
+
+varJalTri <- porcentajeJal - porcentajeJalAntTri
+
+
+if(Trimestre == 1){
+  TrimestrePalAnt <- 'cuarto'
+}else if(Trimestre == 2){
+  TrimestrePalAnt <- 'primer'
+}else if(Trimestre == 3){
+  TrimestrePalAnt <- 'segundo'
+}else if(Trimestre == 4){
+  TrimestrePalAnt <- 'tercer'
+}
+
+porcentajeNacAntTri <- df_c10 %>% select(Nacional) %>% .[nrow(.)-1, 1] 
+
+varNacTri <- porcentajeNac - porcentajeNacAntTri
+
+
+# Texto Pagina 1 ----------------------------------------------------------
+
+
+Titulo1 <- paste0('Pobreza laboral en Jalisco en el ', TrimestrePal, ' trimestre ',
+                  'de ', Anio)
+
+p1 <- paste0('El Consejo Nacional de Evaluación de la Política de Desarrollo ',
+             'Social (CONEVAL) publicó las estadísticas de la población ocupada ',
+             'con ingreso laboral inferior al costo de la canasta alimentaria al ',
+             TrimestrePal, ' trimestre de ', Anio, '.')
+
+p2 <- paste0('En el ', TrimestrePal, ' trimestre de ', Anio, ', la población ',
+             'que no puede adquirir la canasta alimentaria con su ingreso laboral ',
+             'en Jalisco fue del ', round(porcentajeJal,1), '%,') 
+
+if(porcentajeJal < porcentajeNac){
+  p2 <- paste0(p2, ' porcentaje inferior al ',
+               'promedio nacional de ', round(porcentajeNac,1), '%. ')
+}else if(porcentajeJal > porcentajeNac){
+  p2 <- paste0(p2, ' porcentaje superior al ',
+               'promedio nacional de ', round(porcentajeNac,1), '%. ')
+               
+}else{
+  p2 <- paste0(p2, ' porcentaje en linea al ',
+               'promedio nacional. ')
+}
+
+p2 <- paste0(p2, 'En el ', TrimestrePal, ' trimestre del año ',
+             'pasado, el porcentaje de Jalisco fue de ',
+             round(porcentajeJalAntAnual,1), '%, lo que ')
+
+
+
+
+if(varJalAnual > 0){
+  p2 <- paste0(p2, 'implica un aumento anual de ', round(abs(varJalAnual),1),
+               ' puntos porcentuales. ' )
+  
+  if(varJalTri > 0){
+    p2 <- paste0(p2, 'Además, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco también se incrementó de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+  }else if(varJalTri < 0){
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se redujo de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+  }else{
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se mantuvo constante. ')
+  }
+  
+}else if(varJalAnual < 0){
+  p2 <- paste0(p2, 'implica una disminución anual de ', round(abs(varJalAnual),1),
+               ' puntos porcentuales. ' )
+  
+  if(varJalTri > 0){
+    
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se incrementó de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+    
+  }else if(varJalTri < 0){
+    p2 <- paste0(p2, 'Además, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco también se redujo de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+  }else{
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se mantuvo constante. ')
+  }
+  
+}else{
+  p2 <- paste0(p2, 'implica una constante anual.' )
+  
+  if(varJalTri > 0){
+    
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se incrementó de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+    
+  }else if(varJalTri < 0){
+    p2 <- paste0(p2, 'Sin embargo, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco también se redujo de ',
+                 round(porcentajeJalAntTri,1), '% a ', round(porcentajeJal,1), '%.')
+  }else{
+    p2 <- paste0(p2, 'Además, con respecto al trimestre inmediato anterior, ',
+                 'la pobreza laboral de Jalisco se mantuvo constante.')
+  }
+  
+}
+
+
+
+if(Trimestre == 1){
+  if(varNacTri > 0){
+    
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral aumentó de ', round(porcentajeNacAntTri,1),
+                 '% en el ', TrimestrePalAnt, ' trimestre de ', Anio-1,
+                 ' a ', round(porcentajeNac,1), '% en el ', TrimestrePal, 
+                 ' trimestre de ', Anio, '.')
+    
+  }else if(varNacTri < 0){
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral disminuyó de ', round(porcentajeNacAntTri,1),
+                 '% en el ', TrimestrePalAnt, ' trimestre de ', Anio-1,
+                 ' a ', round(porcentajeNac,1), '% en el ', TrimestrePal, 
+                 ' trimestre de ', Anio, '.')
+  }else{
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral se mantuvo constante con respecto al ',
+                 'trimestre inmediato anterior.')
+  }
+}else{
+  if(varNacTri > 0){
+    
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral aumentó de ', round(porcentajeNacAntTri,1),
+                 '% en el ', TrimestrePalAnt, ' trimestre de ', Anio,
+                 ' a ', round(porcentajeNac,1), '% en el ', TrimestrePal, 
+                 ' trimestre de ', Anio, '.')
+    
+  }else if(varNacTri < 0){
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral disminuyó de ', round(porcentajeNacAntTri,1),
+                 '% en el ', TrimestrePalAnt, ' trimestre de ', Anio,
+                 ' a ', round(porcentajeNac,1), '% en el ', TrimestrePal, 
+                 ' trimestre de ', Anio, '.')
+  }else{
+    p2 <- paste0(p2, ' A nivel nacional el porcentaje de la población ',
+                 'en pobreza laboral se mantuvo constante con respecto al ',
+                 'trimestre inmediato anterior.')
+  }
+}
+
+
+
+
+
+Grafica1 <- paste0('Porcentaje de la población con ingreso laboral inferior al costo ',
+                   'de la canasta alimentaria,',
+                   ' ', 'primer', ' trimestre de ','2005 ',
+                   'al ',TrimestrePal, ' de ', Anio)
+
+fuente1 <- 'Fuente: Elaborado con información de CONEVAL.'
+
+nota1 <- paste0('Nota: Debido a la contingencia sanitaria se interrumpió la ', 
+                'recolección de la información de la Encuesta Nacional ',
+                'de Ocupación y Empleo (ENOE) durante el segundo trimestre ',
+                'de 2020, encuesta que es la que usa CONEVAL para construir ',
+                'los indicadores de pobreza laboral.')
+
+
+# Pagina 2 ----------------------------------------------------------------
+
+
+# Variables Pagina 2 ------------------------------------------------------
+AnioActual <- Anio
+TrimestreActual <- Trimestre
+
+#Números cardinales DEL 1 AL 20 en masculino
+num_cardinales = c("primer","segundo","tercer","cuarto","quinto","sexto","séptimo","octavo",
+                   "noveno","décimo","decimoprimer","decimosegundo","decimotercer","decimocuarto",
+                   "decimoquinto","decimosexto","decimoséptimo","decimoctavo","decimonoveno","vigésimo")
+
+nJalisco <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>% filter(Estado != 'Nacional') %>% arrange(valor) %>%
+  mutate(n = 1:nrow(.)) %>% filter(Estado == 'Jalisco') %>%
+  select(n) %>% .[[1,1]] %>% num_cardinales[.]
+
+if(TrimestreActual == 1){
+  nJaliscoAnt <- df_c10_long %>% filter(Anio == AnioActual-1) %>%
+    filter(Trimestre == 4) %>% filter(Estado != 'Nacional') %>% arrange(valor) %>%
+    mutate(n = 1:nrow(.)) %>% filter(Estado == 'Jalisco') %>%
+    select(n) %>% .[[1,1]] %>% num_cardinales[.]
+}else{
+  nJaliscoAnt <- df_c10_long %>% filter(Anio == AnioActual) %>%
+    filter(Trimestre == TrimestreActual-1) %>% filter(Estado != 'Nacional') %>% arrange(valor) %>%
+    mutate(n = 1:nrow(.)) %>% filter(Estado == 'Jalisco') %>%
+    select(n) %>% .[[1,1]] %>% num_cardinales[.]
+}
+
+
+entidadMas <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>% filter(Estado != 'Nacional') %>% arrange(valor)%>%
+  mutate(n = 1:nrow(.)) %>% filter(n == 32) %>%
+  select(Estado) %>% .[[1,1]]
+
+entidadMasPor <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>% filter(Estado != 'Nacional') %>% arrange(valor)%>%
+  mutate(n = 1:nrow(.)) %>% filter(n == 32) %>%
+  select(valor) %>% .[[1,1]] 
+
+
+entidadMenos <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>% filter(Estado != 'Nacional') %>% arrange(valor)%>%
+  mutate(n = 1:nrow(.)) %>% filter(n == 1) %>%
+  select(Estado) %>% .[[1,1]]
+
+entidadMenosPor <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>% filter(Estado != 'Nacional') %>% arrange(valor)%>%
+  mutate(n = 1:nrow(.)) %>% filter(n == 1) %>%
+  select(valor) %>% .[[1,1]] 
+
+
+
+# Texto Pagina 2 ----------------------------------------------------------
+
+
+p4 <- paste0('En el ', TrimestrePal, ' trimestre de ', Anio, ', Jalisco es el ',
+             nJalisco, ' estado con la pobreza laboral más baja del país con ',
+             round(porcentajeJal,1), '% de la población que tiene un ingreso laboral ',
+             'inferior al valor monetario de la canasta alimentaria. ', 'Cabe señalar ',
+             'que en el trimestre anterior Jalisco fue el ', nJaliscoAnt, ' con ',
+             'la pobreza laboral más baja. ', entidadMas, ' tiene el mayor ',
+             'porcentaje de personas en pobreza laboral con ', round(entidadMasPor,1),
+             '%, mientras que ', entidadMenos, ' tiene el más bajo con ',
+             round(entidadMenosPor,1), '%.')
+
+Grafica2 <- paste0('Porcentaje de la población con ingreso laboral inferior ',
+                   'al costo de la canasta alimentaria por entidad federativa, ',
+                   TrimestrePal, ' trimestre de ', Anio)
+
+
+
+
+
+
+# Pagina 3 ----------------------------------------------------------------
+
+# variables pagina 3 ------------------------------------------------------
+
+if(Trimestre == 1){
+  a <-  df_c10_long %>% filter((Anio == AnioActual-1 & Trimestre == 4))
+  names(a) <- c("Anio","Trimestre","Estado","valorAnt")
+  b <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == 1))
+
+}else{
+  a <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == TrimestreActual-1))
+  names(a) <- c("Anio","Trimestre","Estado","valorAnt")
+  b <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == TrimestreActual))
+  
+}
+
+
+nEstadosDismi <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var < 0) %>% nrow(.)
+
+nEstadosAume <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var > 0) %>% nrow(.)
+
+entiMayorVar <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var > 0) %>% arrange(desc(var)) %>% select(Estado) %>%
+  .[[1,1]]
+
+porEntiMayorVar <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var > 0) %>% arrange(desc(var)) %>% select(var) %>%
+  .[[1,1]] 
+
+entiMayorVar_2 <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var > 0) %>% arrange(desc(var)) %>% select(Estado) %>%
+  .[[2,1]]
+
+porEntiMayorVar_2 <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var > 0) %>% arrange(desc(var)) %>% select(var) %>%
+  .[[2,1]] 
+
+
+entiMenorVar <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var < 0) %>% arrange(var) %>% select(Estado) %>%
+  .[[1,1]]
+
+entiMenorVarPor <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var < 0) %>% arrange(var) %>% select(var) %>%
+  .[[1,1]] 
+
+
+entiMenorVar_2 <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var < 0) %>% arrange(var) %>% select(Estado) %>%
+  .[[2,1]] 
+
+entiMenorVarPor_2 <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>% filter(Estado != 'Nacional')%>%
+  filter(var < 0) %>% arrange(var) %>% select(var) %>%
+  .[[2,1]] 
+
+# texto pagina 3 ----------------------------------------------------------
+
+p5 <- paste0('A nivel nacional en el ', TrimestrePal,  ' trimestre',' de ', Anio,
+             ', el porcentaje de la población en pobreza laboral ')
+
+if(varNacTri > 0){
+  
+  p5 <- paste0(p5, 'aumentó ', round(abs(varNacTri),1), ' puntos porcentuales con respecto al trimestre ',
+               'inmediato anterior. ')
+  
+}else if(varNacTri < 0){
+  
+  p5 <- paste0(p5, 'disminuyó ', round(abs(varNacTri),1), ' puntos porcentuales con respecto al trimestre ',
+               'inmediato anterior. ')
+  
+}else{
+  p5 <- paste0(p5, 'se mantuvo constante con respecto al trimestre ',
+               'inmediato anterior. ')
+}
+
+p5 <- paste0(p5, 'En ', nEstadosDismi, ' entidades federativas se redujo la pobreza ',
+             'laboral,')
+
+if(varJalTri < 0){
+  
+  p5 <- paste0(p5, ' incluido Jalisco,')
+  
+}
+
+p5 <- paste0(p5, ' y en ', nEstadosAume, ' aumentó')
+
+
+if(varJalTri > 0){
+  
+  p5 <- paste0(p5, ', incluido Jalisco')
+  
+}
+
+p5 <- paste0(p5, '.')
+
+
+p5 <- paste0(p5, ' ',entiMayorVar, ' es la entidad en donde se observó el mayor crecimiento ',
+             'con ', round(porEntiMayorVar,1), ' puntos porcentuales y ', entiMayorVar_2,
+             ' la segunda con ', round(porEntiMayorVar_2,1), ' puntos. ')
+
+p5 <- paste0(p5, entiMenorVar, ' y ', entiMenorVar_2, ' son las entidades ', 
+             'con la mayor reducción, de ', abs(round(entiMenorVarPor,1)), ' y ',abs(round(entiMenorVarPor_2,1)),
+             ' puntos porcentuales, respectivamente. ')
+
+
+
+if(varJalTri < 0){
+  
+  p5 <- paste0(p5, 'En Jalisco disminuyó la pobreza laboral en ',
+               round(abs(varJalTri),1), ' puntos porcentuales.')
+  
+}else if(varJalTri > 0){
+  
+  p5 <- paste0(p5, 'En Jalisco aumentó la pobreza laboral en ',
+               round(abs(varJalTri),1), ' puntos porcentuales.')
+}else{
+  
+  p5 <- paste0(p5, 'En Jalisco la pobreza laboral se mantuvo constante.')
+}
+
+Grafica3 <- paste0('Variación trimestral del porcentaje de la población en ',
+                   'pobreza laboral por entidad federativa, ', TrimestrePal,
+                   ' trimestre de ', Anio, ', puntos porcentuales')
+
+
+
+# Pagina 4 ----------------------------------------------------------------
+
+
+# Variables Pagina 4 ------------------------------------------------------
+ingresoLabProHom <- df_c21[nrow(df_c21), 1]
+
+ingresoLabProHomAntTri <- df_c21[nrow(df_c21)-1, 1]
+
+ingresoLabProHomAntAnual <- df_c21[nrow(df_c21)-4, 1]
+
+diffIngresoHomTri <- ingresoLabProHom - ingresoLabProHomAntTri
+
+diffIngresoHomAnual <- ingresoLabProHom - ingresoLabProHomAntAnual
+
+varIngresoHomTri <- ((ingresoLabProHom/ingresoLabProHomAntTri)-1)*100
+
+varIngresoHomAnual <- ((ingresoLabProHom/ingresoLabProHomAntAnual)-1)*100
+
+
+
+
+ingresoLabProMuj <- df_c21[nrow(df_c21), 2]
+
+ingresoLabProMujAntTri <- df_c21[nrow(df_c21)-1, 2]
+
+ingresoLabProMujAntAnual <- df_c21[nrow(df_c21)-4, 2]
+
+diffIngresoMujTri <- ingresoLabProMuj - ingresoLabProMujAntTri
+
+diffIngresoMujAnual <- ingresoLabProMuj - ingresoLabProMujAntAnual
+
+varIngresoMujTri <- ((ingresoLabProMuj/ingresoLabProMujAntTri)-1)*100
+
+varIngresoMujAnual <- ((ingresoLabProMuj/ingresoLabProMujAntAnual)-1)*100
+
+
+# Texto pagina 4 ----------------------------------------------------------
+
+
+p6 <- paste0('El ingreso laboral promedio mensual de la población ocupada en ',
+             'Jalisco en el ', TrimestrePal, ' trimestre de ', Anio, ' fue de ',
+             '$', format(round(ingresoLabProHom,2), big.mark = ','), ' pesos en los hombres, ')
+
+if(diffIngresoHomTri > 0){
+  p6 <- paste0(p6, 'presentando un aumento de ', round(varIngresoHomTri,1), 
+               '% en términos reales con respecto al trimestre anterior, ')
+  if(diffIngresoHomAnual > 0){
+    p6 <- paste0(p6, 'Además, se observó un crecimiento real anual de ',
+                 round(varIngresoHomAnual,1), '%.')
+  }else if(diffIngresoHomAnual < 0){
+    p6 <- paste0(p6, 'Sin embargo, se observó un decremento real anual de ',
+                 abs(round(varIngresoHomAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'Sin embargo, se observó una constante en su comparación anual.')
+  }
+} else if(diffIngresoHomTri < 0){
+  p6 <- paste0(p6, 'presentando una disminución de ', abs(round(varIngresoHomTri,1)), 
+               '% en términos reales con respecto al trimestre anterior, ')
+  if(diffIngresoHomAnual > 0){
+    p6 <- paste0(p6, 'Sin embargo, se observó un crecimiento real anual de ',
+                 round(varIngresoHomAnual,1), '%.')
+  }else if(diffIngresoHomAnual < 0){
+    p6 <- paste0(p6, 'Además, se observó un decremento real anual de ',
+                 abs(round(varIngresoHomAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'Además, se observó una constante en su comparación anual.')
+  }
+}else{
+  p6 <- paste0(p6, 'presentando una constante en términos reales con respecto al trimestre anterior, ')
+  if(diffIngresoHomAnual > 0){
+    p6 <- paste0(p6, 'Sin embargo, se observó un crecimiento real anual de ',
+                 round(varIngresoHomAnual,1), '%.')
+  }else if(diffIngresoHomAnual < 0){
+    p6 <- paste0(p6, 'Sin embargo, se observó un decremento real anual de ',
+                 abs(round(varIngresoHomAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'Además, se observó una constante en su comparación anual.')
+  }
+}
+
+
+
+p6 <- paste0(p6, ' En el caso de las mujeres, el ingreso laboral promedio mensual fue de $',
+             format(round(ingresoLabProMuj,2),big.mark = ','), ' pesos, ')
+
+
+
+if(diffIngresoMujTri > 0){
+  p6 <- paste0(p6, 'presentando un aumento trimestral en términos reales de ', round(varIngresoMujTri,1), 
+               '% ')
+  if(diffIngresoMujAnual > 0){
+    p6 <- paste0(p6, 'y un crecimiento real anual de ',
+                 round(varIngresoMujAnual,1), '%.')
+  }else if(diffIngresoMujAnual < 0){
+    p6 <- paste0(p6, 'pero un decremento real anual de ',
+                 abs(round(varIngresoMujAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'pero observandose una constante en su comparación anual.')
+  }
+} else if(diffIngresoMujTri < 0){
+  p6 <- paste0(p6, 'presentando una disminución trimestral en términos reales de ', abs(round(varIngresoMujTri,1)), 
+               '% ')
+  if(diffIngresoMujAnual > 0){
+    p6 <- paste0(p6, 'pero un crecimiento real anual de ',
+                 round(varIngresoMujAnual,1), '%.')
+  }else if(diffIngresoMujAnual < 0){
+    p6 <- paste0(p6, 'y un decremento real anual de ',
+                 abs(round(varIngresoMujAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'pero una constante en su comparación anual.')
+  }
+}else{
+  p6 <- paste0(p6, 'presentando una constante en términos reales con respecto al trimestre anterior ')
+  if(diffIngresoMujAnual > 0){
+    p6 <- paste0(p6, 'pero un crecimiento real anual de ',
+                 round(varIngresoMujAnual,1), '%.')
+  }else if(diffIngresoMujAnual < 0){
+    p6 <- paste0(p6, 'pero un decremento real anual de ',
+                 abs(round(varIngresoMujAnual,1)), '%.')
+  }else{
+    p6 <- paste0(p6, 'y una constante en su comparación anual.')
+  }
+  
+}
+
+Grafica4 <- paste0('Ingreso laboral promedio mensual de la población ocupada en Jalisco por sexo, pesos constantes, ',
+                   'primer trimestre de 2005 al ', TrimestrePal, ' trimestre de ',
+                   Anio)
+
+# Pagina 5 ----------------------------------------------------------------
+
+
+# Variables pagina 5 ------------------------------------------------------
+nGuadalajara <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  arrange(valor) %>% mutate(n = 1:nrow(.)) %>%
+  filter(AM == 'Ciudad de Guadalajara') %>%
+  select(n) %>% .[[1,1]] %>% num_cardinales[.]
+
+propPobreGuad <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  filter(AM == 'Ciudad de Guadalajara') %>%
+  select(valor) %>% .[[1,1]] 
+
+ciudadMasAlto <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  arrange(desc(valor)) %>% select(AM) %>% .[[1,1]] %>%
+  str_remove(.,'Ciudad de ')
+
+propPobreCiudadMasAlto <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  arrange(desc(valor)) %>% select(valor) %>% .[[1,1]] 
+
+ciudadMasBajo <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  arrange(valor) %>% select(AM) %>% .[[1,1]] %>%
+  str_remove(.,'Ciudad de ')
+
+propPobreCiudadMasBajo <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  arrange(valor) %>% select(valor) %>% .[[1,1]]
+
+# Texto pagina 5 ----------------------------------------------------------
+
+p7 <- paste0('Con respecto a la estadística por área metropolitana, ',
+             'se tiene que la ciudad de Guadalajara se encuentra en el ',
+             nGuadalajara,' lugar de las ciudades con la pobreza laboral más baja con ',
+             round(propPobreGuad,1), '%. ', ciudadMasAlto, ' tiene el porcentaje más alto de ',
+             'personas que no les alcanza con su ingreso laboral a adquirir la canasta ',
+             'alimentaria con ', round(propPobreCiudadMasAlto,1), '%, mientras que ',
+             ciudadMasBajo, ' tiene el porcentaje más bajo con ', round(propPobreCiudadMasBajo,1),
+             '%.')
+
+Grafica5 <- paste0('Porcentaje de la población con ingreso laboral inferior al costo ',
+                   'de la canasta alimentaria por área metropolitana, ',
+                   TrimestrePal, ' trimestre de ', Anio)
+
+
+
+# Creacion de graficas ----------------------------------------------------
+
+
+# Grafica 1 ---------------------------------------------------------------
+
+if(TrimestreActual == 1){
+  
+  datosGrafica1 <- df_c10_long %>% filter(Estado %in% c('Jalisco', 'Nacional')) %>%
+    mutate(valor = round(valor, 1)) %>% 
+    mutate(cuartos = ifelse(Trimestre == 1, 'I',
+                            ifelse(Trimestre == 2, 'II',
+                                   ifelse(Trimestre == 3, 'III','IV')))) %>%
+    mutate(AnioTrim = paste0(Anio, ' ', cuartos)) %>% 
+    mutate(texto = ifelse((Anio == 2020 & Trimestre == 1), valor,
+                          ifelse((Anio == 2020 & Trimestre == 3), valor,
+                                 ifelse((Anio == AnioActual & Trimestre == TrimestreActual), valor,
+                                        ifelse((Anio == AnioActual-1 & Trimestre == 4), valor,
+                                               ifelse((Anio == AnioActual-1 & Trimestre == TrimestreActual), valor,NA)))))) 
+}else{
+  datosGrafica1 <- df_c10_long %>% filter(Estado %in% c('Jalisco', 'Nacional')) %>%
+    mutate(valor = round(valor, 1)) %>% 
+    mutate(cuartos = ifelse(Trimestre == 1, 'I',
+                            ifelse(Trimestre == 2, 'II',
+                                   ifelse(Trimestre == 3, 'III','IV')))) %>%
+    mutate(AnioTrim = paste0(Anio, ' ', cuartos)) %>% 
+    mutate(texto = ifelse((Anio == 2020 & Trimestre == 1), valor,
+                          ifelse((Anio == 2020 & Trimestre == 3), valor,
+                                 ifelse((Anio == AnioActual & Trimestre == TrimestreActual), valor,
+                                        ifelse((Anio == AnioActual & Trimestre == TrimestreActual-1), valor,
+                                               ifelse((Anio == AnioActual-1 & Trimestre == TrimestreActual), valor,NA)))))) 
+}
+
+
+
+
+
+
+etiquetasGrafica1 <- datosGrafica1 %>% filter(Estado == 'Jalisco')
+
+#Etiquetas
+if (Trimestre == 1) {
+  etiquetasX <- etiquetasGrafica1[rep(c(TRUE, FALSE, FALSE, FALSE), nrow(etiquetasGrafica1)) %>% .[1:nrow(etiquetasGrafica1)],6]
+}else if(Trimestre == 2){
+  etiquetasX <- etiquetasGrafica1[rep(c(FALSE, TRUE, FALSE, FALSE), nrow(etiquetasGrafica1)) %>% .[1:nrow(etiquetasGrafica1)],6]
+}else if(Trimestre == 3){
+  etiquetasX <- etiquetasGrafica1[rep(c(FALSE, FALSE, TRUE, FALSE), nrow(etiquetasGrafica1)) %>% .[1:nrow(etiquetasGrafica1)],6]
+}else{
+  etiquetasX <- etiquetasGrafica1[rep(c(FALSE, FALSE, FALSE, TRUE), nrow(etiquetasGrafica1)) %>% .[1:nrow(etiquetasGrafica1)],6]
+}
+
+etiquetasX <- etiquetasX %>% as.vector() %>% unlist() %>% unname()
+
+names(datosGrafica1)[6] <- 'Periodo'
+names(datosGrafica1)[4] <- 'Porcentaje'
+
+plot1 <- ggplot(datosGrafica1)+
+  geom_line(aes(x = Periodo, y = Porcentaje, color = Estado, group = Estado), linewidth = 1)+
+  geom_text_repel(aes(x = Periodo, y = texto,label = texto), size = 2.5, direction = 'y')+
+  scale_x_discrete(breaks = c(etiquetasX))+
+  scale_y_continuous(limits = c(0, 50))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill='white'),
+        plot.background = element_rect(fill='white', color='white'),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype=1),
+        legend.position = 'bottom',
+       legend.title = element_blank(),
+       axis.title.x = element_blank(),
+       axis.title.y = element_blank())+
+  scale_color_manual(values=c('#33FF77','#7C868D'))
+
+
+# Grafica 2 ---------------------------------------------------------------
+
+
+datosGrafica2 <- df_c10_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual)%>% mutate(valor = round(valor,1)) %>% 
+  arrange(desc(valor)) %>%
+  mutate(colores = ifelse(Estado == 'Nacional', 'A', ifelse(Estado == 'Jalisco', 'B', 'C')))
+
+names(datosGrafica2)[4] <- 'Porcentaje'
+
+plot2 <- ggplot(datosGrafica2)+
+  geom_col(aes(reorder(Estado, Porcentaje), Porcentaje, fill = colores))+
+  geom_text(aes(reorder(Estado, Porcentaje), Porcentaje*0.9, label = Porcentaje), hjust=-0.35, size=2.8,
+            colour = 'white')+
+  coord_flip()+
+  scale_fill_manual(values = c('A' = '#94682A', 'B' = '#33FF77', 'C' = '#7C868D'))+
+  theme(panel.grid = element_blank(),
+        panel.background = element_rect(fill='white'),
+        plot.background = element_rect(fill='white', color='white'),
+        axis.line = element_line(size = 0.5, colour = "black", linetype=1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x  = element_blank(),
+        legend.position='none',
+        axis.title.y  = element_blank(),
+        axis.text.y = element_text(size = 8),
+        axis.line.x = element_blank(),
+        plot.margin = unit(c(1,1,1,0), 'cm'))+
+  scale_y_discrete(expand = c(0.1,0))
+
+
+# Grafica 3 ---------------------------------------------------------------
+
+
+if(Trimestre == 1){
+  a <-  df_c10_long %>% filter((Anio == AnioActual-1 & Trimestre == 4))
+  names(a) <- c("Anio","Trimestre","Estado","valorAnt")
+  b <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == 1))
+  
+}else{
+  a <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == TrimestreActual-1))
+  names(a) <- c("Anio","Trimestre","Estado","valorAnt")
+  b <-  df_c10_long %>% filter((Anio == AnioActual & Trimestre == TrimestreActual))
+  
+}
+
+
+datosGrafica3 <- left_join(a, b, join_by(Estado)) %>%
+  mutate(var = valor - valorAnt) %>%
+  mutate(colores = ifelse(Estado == 'Nacional', 'A', ifelse(Estado == 'Jalisco', 'B', 'C')))%>% 
+  mutate(var = round(var,1)) %>%
+  mutate(varPosi = ifelse(var >= 0, var, NA)) %>%
+  mutate(varNega = ifelse(var < 0, var, NA))
+
+names(datosGrafica3)[8] <- 'Variación'
+
+plot3 <- ggplot(datosGrafica3)+
+  geom_col(aes(reorder(Estado, Variación), Variación, fill = colores))+
+  geom_text(aes(reorder(Estado, varPosi), varPosi*1.2, label = Variación), size=2.8, hjust=-0.35)+
+  geom_text(aes(reorder(Estado, varNega), varNega*1.2, label = Variación), size=2.8, hjust=1.2)+
+  coord_flip()+
+  scale_fill_manual(values = c('A' = '#94682A', 'B' = '#33FF77', 'C' = '#7C868D'))+
+  theme(panel.grid = element_blank(),
+        panel.background = element_rect(fill='white'),
+        plot.background = element_rect(fill='white', color='white'),
+        axis.line = element_line(size = 0.5, colour = "black", linetype=1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x  = element_blank(),
+        legend.position='none',
+        axis.title.y  = element_blank(),
+        axis.text.y = element_text(size = 8),
+        axis.line.x = element_blank(),
+        plot.margin = unit(c(1,1,1,0), 'cm'))+
+  scale_y_discrete(expand = c(0.1,0))
+
+
+
+
+# Grafica 4 ---------------------------------------------------------------
+
+
+datosGrafica4 <- df_c21 %>% pivot_longer(names_to = 'Sexo', cols = c('Hombres', 'Mujeres'),
+                                         values_to = 'valor') %>%
+  mutate(valor = round(valor, 1)) %>% 
+  mutate(cuartos = ifelse(Trimestre == 1, 'I',
+                          ifelse(Trimestre == 2, 'II',
+                                 ifelse(Trimestre == 3, 'III','IV')))) %>%
+  mutate(AnioTrim = paste0(Anio, ' ', cuartos)) %>%
+  mutate(texto = ifelse((Anio == AnioActual & Trimestre == TrimestreActual), valor, NA))
+
+limYMax <- max(datosGrafica4$valor, na.rm = T)
+limYMax <- limYMax - limYMax%%1000
+limYMax <- limYMax + 1000
+
+names(datosGrafica4)[4] <- 'Ingreso'
+names(datosGrafica4)[6] <- 'Periodo'
+
+plot4 <- ggplot(datosGrafica4)+
+  geom_line(aes(x = Periodo, y = Ingreso, color = Sexo, group = Sexo), linewidth = 1)+
+  geom_text_repel(aes(x = Periodo, y = texto,label = paste0('$', format(texto, big.mark=','))),
+                  size = 2.8, direction = 'both')+
+  scale_x_discrete(breaks = c(etiquetasX))+
+  ylim(0,limYMax)+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill='white'),
+        plot.background = element_rect(fill='white', color='white'),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype=1),
+        legend.position = 'bottom',
+        legend.title = element_blank(),
+        axis.title.x = element_blank())+
+  scale_color_manual(values=c('#7C868D','#33FF77'))+
+  labs(y = '')
+
+
+# Grafica 5 ---------------------------------------------------------------
+
+
+datosGrafica5 <- df_c13_long %>% filter(Anio == AnioActual) %>%
+  filter(Trimestre == TrimestreActual) %>%
+  mutate(colores = ifelse(AM == 'Ciudad de Guadalajara', 'A', 'B')) %>%
+  mutate(valor = round(valor,1))
+
+names(datosGrafica5)[4] <- 'Porcentaje'
+
+plot5 <- ggplot(datosGrafica5)+
+  geom_col(aes(reorder(AM, Porcentaje), Porcentaje, fill = colores))+
+  geom_text(aes(reorder(AM, Porcentaje), Porcentaje*0.9, label = Porcentaje), hjust=-0.1, size=2.8,
+            color = 'white')+
+  coord_flip()+
+  scale_fill_manual(values = c('A' = '#33FF77', 'B' = '#7C868D'))+
+  theme(panel.grid = element_blank(),
+        panel.background = element_rect(fill='white'),
+        plot.background = element_rect(fill='white', color='white'),
+        axis.line = element_line(size = 0.5, colour = "black", linetype=1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x  = element_blank(),
+        axis.text = element_text(size = 6),
+        legend.position='none',
+        axis.title.y  = element_blank(),
+        axis.text.y = element_text(size = rel(1.2)),
+        axis.line.x = element_blank(),
+        plot.margin = unit(c(1,1,1,0), 'cm'))+
+  scale_y_discrete(expand = c(0.1,0))
+
+
+```
+
+`r p1`
+
+`r p2`
+
+**`r Grafica1`**
+
+```{r, echo=FALSE, warning=FALSE}
+plotly::ggplotly(plot1, tooltip = c('Periodo', 'Porcentaje')) %>% config(displayModeBar = FALSE) %>%
+  layout(hovermode = "closest",
+         hoverlabel = list(bgcolor="black",
+                           bordercolor="black",
+                           font=list(color="white", 
+                                     size=11)),
+         legend=list(title=list(text='<b>  </b>')))
+```
+
+`r fuente1`
+
+`r nota1`
+
+*****
+
+`r p4`
+
+**`r Grafica2`**
+
+```{r, echo=FALSE, warning=FALSE}
+plotly::ggplotly(plot2, tooltip = c('Porcentaje')) %>% config(displayModeBar = FALSE) %>%
+  layout(hovermode = "closest",
+         hoverlabel = list(bgcolor="black",
+                           bordercolor="black",
+                           font=list(color="white", 
+                                     size=11)),
+         legend=list(title=list(text='<b>  </b>')))
+```
+
+`r fuente1`
+
+****
+
+`r p5`
+
+**`r Grafica3`**
+
+```{r, echo=FALSE, warning=FALSE}
+plotly::ggplotly(plot3, tooltip = c('Variación')) %>% config(displayModeBar = FALSE) %>%
+  layout(hovermode = "closest",
+         hoverlabel = list(bgcolor="black",
+                           bordercolor="black",
+                           font=list(color="white", 
+                                     size=11)))
+```
+
+`r fuente1`
+
+****
+
+`r p6`
+
+**`r Grafica4`**
+
+```{r, echo=FALSE, warning=FALSE}
+plotly::ggplotly(plot4, tooltip = c('Ingreso', 'Periodo')) %>% config(displayModeBar = FALSE) %>%
+  layout(hovermode = "closest",
+         hoverlabel = list(bgcolor="black",
+                           bordercolor="black",
+                           font=list(color="white", 
+                                     size=11)),
+         legend=list(title=list(text='<b>  </b>')))
+```
+
+`r fuente1`
+
+****
+
+`r p7`
+
+**`r Grafica5`**
+
+```{r, echo=FALSE, warning=FALSE}
+plotly::ggplotly(plot5, tooltip = c('Porcentaje')) %>% config(displayModeBar = FALSE)  %>%
+  layout(hovermode = "closest",
+         hoverlabel = list(bgcolor="black",
+                           bordercolor="black",
+                           font=list(color="white", 
+                                     size=11)),
+         legend=list(title=list(text='<b>  </b>')))
+```
+
+`r fuente1`
+
+
